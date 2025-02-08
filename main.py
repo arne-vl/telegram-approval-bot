@@ -3,10 +3,18 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 from dotenv import load_dotenv
 import logging
+import pika
+import threading
+import asyncio
+import json
+import base64
 
 load_dotenv()
 TELEGRAM_API_TOKEN = os.getenv("TELEGRAM_API_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL")
+RABBITMQ_APPROVAL_QUEUE = os.getenv("RABBITMQ_APPROVAL_QUEUE")
+RABBITMQ_APPROVED_QUEUE = os.getenv("RABBITMQ_APPROVED_QUEUE")
 
 help_message = """Use one of these commands:
 /hello      -> Greeting
@@ -20,35 +28,88 @@ async def hello_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_message)
 
-async def test_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [
-            InlineKeyboardButton("Yes", callback_data="yes"),
-            InlineKeyboardButton("No", callback_data="no")
-        ]
-    ]
+async def send_approval_message(context: ContextTypes.DEFAULT_TYPE, repo_name: str):
+    keyboard = [[InlineKeyboardButton("Yes", callback_data=f"approve {repo_name}"),
+                 InlineKeyboardButton("No", callback_data=f"deny {repo_name}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text("Do you think the poll works?", reply_markup = reply_markup)
+    await context.bot.send_message(
+        chat_id=CHAT_ID,
+        text=f"Do you want to create the repo '{repo_name}'?",
+        reply_markup=reply_markup
+    )
 
-async def test_poll_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    choice = query.data
-    logging.info(f"User chose: {choice}")
+    data = query.data
+    if data.startswith("approve"):
+        repo_name = data.split(" ")[1]
+        logging.info(f"User approved repo: {repo_name}")
 
-    await query.edit_message_text(text=f"You chose: '{choice}'.The poll worked.")
+        message = json.dumps({"repo_name": repo_name}).encode("utf-8")
+        base64_message = base64.b64encode(message).decode("utf-8")
+
+        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        channel = connection.channel()
+        channel.queue_declare(queue=RABBITMQ_APPROVED_QUEUE, durable=True)
+
+        channel.basic_publish(exchange="",
+                              routing_key=RABBITMQ_APPROVED_QUEUE,
+                              body=base64_message,
+                              properties=pika.BasicProperties(delivery_mode=2))
+
+        connection.close()
+
+        await query.edit_message_text(text=f"Creation of repository '{repo_name}' approved.")
+    else:
+        await query.edit_message_text(text=f"Creation of repository '{repo_name}' denied.")
+
+def rabbitmq_consumer(application: Application, loop: asyncio.AbstractEventLoop):
+    def callback(ch, method, properties, body):
+        try:
+            message = json.loads(body.decode("utf-8"))
+            repo_name = message.get("repo_name")
+
+            if repo_name:
+                logging.info(f"Received approval request for repo: {repo_name}")
+                asyncio.run_coroutine_threadsafe(
+                    send_approval_message(context=application, repo_name=repo_name),
+                    loop
+                )
+            else:
+                logging.warning("Received invalid message format.")
+
+        except (json.JSONDecodeError, base64.binascii.Error) as e:
+            logging.error(f"Failed to decode RabbitMQ message: {e}")
+
+    connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+    channel = connection.channel()
+    channel.queue_declare(queue=RABBITMQ_APPROVAL_QUEUE, durable=True)
+    channel.basic_consume(queue=RABBITMQ_APPROVAL_QUEUE, on_message_callback=callback, auto_ack=True)
+
+    logging.info("RabbitMQ consumer started...")
+    channel.start_consuming()
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     app = Application.builder().token(TELEGRAM_API_TOKEN).build()
 
     app.add_handler(CommandHandler("hello", hello_command))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("polltest", test_poll_command))
 
-    app.add_handler(CallbackQueryHandler(test_poll_callback))
+    app.add_handler(CallbackQueryHandler(approval_callback))
+
+    rabbitmq_thread = threading.Thread(
+        target=rabbitmq_consumer,
+        args=(app, loop),
+        daemon=True
+    )
+    rabbitmq_thread.start()
 
     app.run_polling(poll_interval=3)
