@@ -19,7 +19,6 @@ RABBITMQ_APPROVED_QUEUE = os.getenv("RABBITMQ_APPROVED_QUEUE")
 help_message = """Use one of these commands:
 /hello      -> Greeting
 /help       -> Get more info about commands
-/polltest   -> Test if the poll works
 """
 
 async def hello_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
