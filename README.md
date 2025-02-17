@@ -1,6 +1,10 @@
 # telegram-approval-bot
 Telegram approval bot that uses RabbitMQ. Used for approving repository creation.
 
+<a href="https://hub.docker.com/r/arnevl/telegram-approval-bot" target="_blank">
+    <img alt="Static Badge" src="https://img.shields.io/badge/docker-arnevl/telegram--approval--bot-blue">
+</a>
+
 Queue message payload should be the following json format:
 ```json
 {
