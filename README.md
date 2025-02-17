@@ -1,7 +1,7 @@
 # telegram-approval-bot
 Telegram approval bot that uses RabbitMQ. Used for approving repository creation.
 
-Queue message payload should be the base64 encoded version of the following json format:
+Queue message payload should be the following json format:
 ```json
 {
     "repo_name": "{your_repo_name}"

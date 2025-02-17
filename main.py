@@ -7,7 +7,6 @@ import pika
 import threading
 import asyncio
 import json
-import base64
 
 load_dotenv()
 TELEGRAM_API_TOKEN = os.getenv("TELEGRAM_API_TOKEN")
@@ -28,8 +27,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_message)
 
 async def send_approval_message(context: ContextTypes.DEFAULT_TYPE, repo_name: str):
-    keyboard = [[InlineKeyboardButton("Yes", callback_data=f"approve {repo_name}"),
-                 InlineKeyboardButton("No", callback_data=f"deny {repo_name}")]]
+    keyboard = [
+        [
+            InlineKeyboardButton("Yes", callback_data=f"approved {repo_name}"),
+            InlineKeyboardButton("No", callback_data=f"denied {repo_name}")
+        ]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await context.bot.send_message(
@@ -43,21 +46,25 @@ async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data
-    if data.startswith("approve"):
-        repo_name = data.split(" ")[1]
+
+    approved = data.startswith("approved")
+    repo_name = data.split(" ")[1]
+
+    if approved:
         logging.info(f"User approved repo: {repo_name}")
 
         message = json.dumps({"repo_name": repo_name}).encode("utf-8")
-        base64_message = base64.b64encode(message).decode("utf-8")
 
         connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
         channel = connection.channel()
         channel.queue_declare(queue=RABBITMQ_APPROVED_QUEUE, durable=True)
 
-        channel.basic_publish(exchange="",
-                              routing_key=RABBITMQ_APPROVED_QUEUE,
-                              body=base64_message,
-                              properties=pika.BasicProperties(delivery_mode=2))
+        channel.basic_publish(
+            exchange="",
+            routing_key=RABBITMQ_APPROVED_QUEUE,
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
 
         connection.close()
 
@@ -80,8 +87,8 @@ def rabbitmq_consumer(application: Application, loop: asyncio.AbstractEventLoop)
             else:
                 logging.warning("Received invalid message format.")
 
-        except (json.JSONDecodeError, base64.binascii.Error) as e:
-            logging.error(f"Failed to decode RabbitMQ message: {e}")
+        except Exception as e:
+            logging.error(f"Encountered Exception: {e}")
 
     connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
     channel = connection.channel()
